@@ -5,7 +5,7 @@ const API_BASE_URL = 'http://127.0.0.1:8000';
 const stripExtension = (filename) => filename.substring(0, filename.lastIndexOf('.')) || filename;
 
 export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isRefreshing }) {
-  const [invoices, setInvoices] = useState([]); // This is the derived list for display
+  const [invoices, setInvoices] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortOrder, setSortOrder] = useState('newest');
   const [currentPage, setCurrentPage] = useState(1);
@@ -20,9 +20,16 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
   const [modalCache, setModalCache] = useState({});
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [invoiceToDelete, setInvoiceToDelete] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false); // For the modal buttons
+
+  // --- NEW: State to track the ID of the invoice being deleted in the list ---
+  const [deletingInvoiceId, setDeletingInvoiceId] = useState(null);
 
   // This effect now depends on the `allInvoices` prop from the parent
+  useEffect(() => {
+    setInvoices(allInvoices);
+  }, [allInvoices]);
+
   useEffect(() => {
     let processedInvoices = [...allInvoices];
     if (searchTerm) {
@@ -88,6 +95,9 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
   }, [isModalOpen]);
 
   const handleInvoiceClick = (invoice) => {
+    // Prevent clicking if the card is in the process of being deleted
+    if (deletingInvoiceId === invoice.id) return;
+
     if (selectedInvoice?.id !== invoice.id) {
         setModalCache({});
     }
@@ -102,17 +112,34 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
     setIsDeleteModalOpen(true);
   };
   
+  // --- MODIFIED: confirmDelete now provides immediate visual feedback ---
   const confirmDelete = async () => {
     if (!invoiceToDelete) return;
-    setIsDeleting(true);
+    
+    // This is for the modal buttons
+    setIsDeleting(true); 
+    
+    // Close the confirmation modal IMMEDIATELY
+    setIsDeleteModalOpen(false);
+    
+    // Set the specific invoice ID to trigger the fade-out effect in the list
+    setDeletingInvoiceId(invoiceToDelete.id);
+
     try {
       const url = `${API_BASE_URL}/delete-invoice/${encodeURIComponent(invoiceToDelete.name)}`;
       const response = await fetch(url, { method: 'DELETE' });
+      
+      // Artificial delay to ensure the user sees the effect
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: "Failed to delete." }));
         throw new Error(errorData.detail);
       }
-      onDataChange(); // Call the parent's full refresh function
+
+      // Call the parent's full refresh function. This will make the faded item disappear.
+      onDataChange();
+      
       if (selectedInvoice?.id === invoiceToDelete.id) {
           setIsModalOpen(false);
       }
@@ -120,9 +147,10 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
       console.error("Delete failed:", error);
       alert(`Delete failed: ${error.message}`);
     } finally {
+      // Clear all related states
       setIsDeleting(false); 
-      setIsDeleteModalOpen(false);
       setInvoiceToDelete(null);
+      setDeletingInvoiceId(null);
     }
   };
 
@@ -156,13 +184,25 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
             <select className="sort-dropdown" value={sortOrder} onChange={handleSortChange}><option value="newest">Sort by: Newest</option><option value="oldest">Sort by: Oldest</option><option value="name-az">Sort by: Name (A-Z)</option><option value="name-za">Sort by: Name (Z-A)</option></select>
         </div>
         <div className="invoice-list-scroll">
-            {paginatedInvoices.map(invoice => (
-            <div key={invoice.id} className={`invoice-card ${selectedInvoice?.id === invoice.id ? 'selected' : ''}`} onClick={() => handleInvoiceClick(invoice)}>
-                <File size={24} className="file-icon" /><div className="invoice-details"><div className="invoice-name">{invoice.name}</div><div className="invoice-date">Uploaded: {invoice.uploadDate}</div></div>
-                {invoice.status && (<span className={`status-badge status-${invoice.status} ${isRefreshing ? 'refreshing' : ''}`}>{invoice.status}</span>)}
-                <button className="delete-btn" title={`Delete ${invoice.name}`} onClick={(e) => initiateDelete(e, invoice)}><Trash2 size={18} /></button>
-            </div>
-            ))}
+            {paginatedInvoices.map(invoice => {
+              // --- NEW: Add a class if this specific invoice is being deleted ---
+              const isCardDeleting = deletingInvoiceId === invoice.id;
+              const cardClasses = `invoice-card ${selectedInvoice?.id === invoice.id ? 'selected' : ''} ${isCardDeleting ? 'deleting' : ''}`;
+              
+              return (
+                <div key={invoice.id} className={cardClasses} onClick={() => handleInvoiceClick(invoice)}>
+                    <File size={24} className="file-icon" />
+                    <div className="invoice-details">
+                        <div className="invoice-name">{invoice.name}</div>
+                        <div className="invoice-date">Uploaded: {invoice.uploadDate}</div>
+                    </div>
+                    {invoice.status && (<span className={`status-badge status-${invoice.status} ${isRefreshing ? 'refreshing' : ''}`}>{invoice.status}</span>)}
+                    <button className="delete-btn" title={`Delete ${invoice.name}`} onClick={(e) => initiateDelete(e, invoice)} disabled={isCardDeleting}>
+                        {isCardDeleting ? <Loader size={18} className="loader"/> : <Trash2 size={18} />}
+                    </button>
+                </div>
+              );
+            })}
         </div>
         <div className="pagination-controls">
             <button className="pagination-btn" onClick={() => setCurrentPage(p => p - 1)} disabled={currentPage === 1}>Previous</button>
