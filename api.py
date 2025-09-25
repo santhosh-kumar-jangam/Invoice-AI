@@ -3,12 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import storage
 from google.cloud import firestore
 from google.api_core import exceptions
-from pydantic import BaseModel
+from google.adk.runners import Runner
+from google.adk.sessions import DatabaseSessionService, Session
+from google.genai.types import Content, Part
+from chatassistant.agent import chat_agent
+from pydantic import BaseModel, Field
 import io, mimetypes,json,os,datetime
 from fastapi.responses import StreamingResponse
-from typing import List,Dict,Any
+from typing import List,Dict,Any, Optional
 from dotenv import load_dotenv
-
 load_dotenv()
 
 class InvoiceStatus(BaseModel):
@@ -43,6 +46,27 @@ class SourceInvoice(BaseModel):
 class DeleteResponse(BaseModel):
     status: str
     message: str
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str
+    session_id: Optional[str] = Field(
+        None,
+        description="The existing session ID to continue a conversation. If null, a new session will be created."
+    )
+
+class ChatResponse(BaseModel):
+    reply: str
+    session_id: str
+
+class SessionSummary(BaseModel):
+    id: str
+    last_message: str
+    last_updated: datetime.datetime
+
+class SessionHistory(BaseModel):
+    id: str
+    messages: list[str]
 
 # --- FastAPI App ---
 app = FastAPI(
@@ -96,37 +120,47 @@ def get_firestore_client():
 async def read_root():
     return {"status": "API is running"}
 
-@app.post("/upload-invoice/", response_model=UploadResponse, tags=["Invoices"])
+@app.post("/upload-invoice", response_model=UploadResponse, tags=["Invoices"])
 async def upload_invoice(
-    file: UploadFile = File(...),
+    file: UploadFile,
     storage_client: storage.Client = Depends(get_gcs_client),
     db: firestore.Client = Depends(get_firestore_client)
 ):
+    """
+    Handles uploading a single invoice file, saving it to GCS and creating
+    a corresponding status record in Firestore.
+    """
     source_bucket_name = os.getenv("SOURCE_BUCKET")
     
-    # Upload to GCS
     try:
+        # 1. Upload to GCS
         bucket = storage_client.bucket(source_bucket_name)
+        if bucket.blob(file.filename).exists():
+            raise ValueError(f"File '{file.filename}' already exists.")
+            
         blob = bucket.blob(file.filename)
         blob.upload_from_file(file.file)
         gcs_uri = f"gs://{source_bucket_name}/{file.filename}"
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload file: {e}")
 
-    # Create status record in Firestore
-    try:
-        invoice_ref = db.collection("invoices").document(file.filename)
-        invoice_ref.set({
-            "filename": file.filename,
-            "status": "UPLOADED",
-            "last_modified": datetime.datetime.now(datetime.timezone.utc),
-            "gcs_source_uri": gcs_uri
-        })
-    except Exception as e:
-        blob.delete() # Rollback GCS upload if DB write fails
-        raise HTTPException(status_code=500, detail=f"Failed to create status record: {e}")
+        # 2. Create status record in Firestore
+        try:
+            invoice_ref = db.collection("invoices").document(file.filename)
+            invoice_ref.set({
+                "filename": file.filename,
+                "status": "UPLOADED",
+                "created_at": datetime.datetime.now(datetime.timezone.utc),
+                "last_modified": datetime.datetime.now(datetime.timezone.utc),
+                "gcs_source_uri": gcs_uri
+            })
+        except Exception as db_e:
+            blob.delete() # Rollback GCS upload if DB write fails
+            raise db_e
 
-    return {"status": "success", "gcs_uri": gcs_uri, "filename": file.filename}
+        return {"status": "success", "gcs_uri": gcs_uri, "filename": file.filename}
+
+    except Exception as e:
+        print(f"Failed to process file {file.filename}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     
 @app.get("/invoices/", response_model=List[InvoiceStatus], tags=["Invoices"])
 async def list_invoices_with_status(
@@ -355,3 +389,150 @@ async def delete_invoice(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+
+# ----- CHAT ENDPOINT -----
+try:
+    CHAT_SESSIONS_DB_PATH = os.getenv("CHAT_SESSIONS_DB_PATH")
+    if not CHAT_SESSIONS_DB_PATH:
+        raise ValueError("CHAT_SESSIONS_DB_PATH environment variable not set.")
+
+    db_url = f"sqlite:///{CHAT_SESSIONS_DB_PATH}"
+    print(f"Initializing Session Service with database at: {db_url}")
+    session_service = DatabaseSessionService(db_url=db_url)
+    print("Session Service ready.")
+except Exception as e:
+    print(f"FATAL: Could not initialize ADK Session Service. Error: {e}")
+    session_service = None
+
+if not session_service:
+    raise HTTPException(status_code=503, detail="Chat service is not available.")
+    
+@app.post("/chat/", response_model=ChatResponse, tags=["Chat"])
+async def handle_chat_message(request: ChatRequest):
+    """
+    Handles a user's chat message, routes it to the chat_agent,
+    manages the conversation session, and returns the agent's final response.
+    """
+
+    try:
+        if request.session_id:
+            # Continue an existing conversation
+            session = await session_service.get_session(session_id=request.session_id, app_name="invoice_chat", user_id=request.user_id)
+            if not session:
+                # If the client sends an invalid/expired session ID, create a new one
+                print(f"Warning: Session '{request.session_id}' not found. Creating a new session.")
+                session = await session_service.create_session(app_name="invoice_chat", user_id=request.user_id)
+        else:
+            # Start a new conversation
+            session = await session_service.create_session(app_name="invoice_chat", user_id=request.user_id)
+
+        print(f"Using Session ID: {session.id} for User: {request.user_id}")
+
+        # 2. INITIALIZE THE AGENT RUNNER
+        agent_runner = Runner(agent=chat_agent, app_name="invoice_chat", session_service=session_service)
+
+        # 3. RUN THE AGENT
+        message = Content(parts=[Part(text=request.message)],role="user")
+        
+        final_reply = "Sorry, I encountered an issue and could not get a response."
+
+        events = agent_runner.run_async(
+            session_id=session.id,
+            user_id=request.user_id,
+            new_message=message,
+        )
+
+        # 4. PROCESS THE RESPONSE STREAM
+        async for event in events:
+            print(f"Event from: {event.author}, Type: {type(event.content)}")
+            if event.is_final_response() and event.content and event.content.parts and event.content.parts[0]:
+                final_reply = event.content.parts[0].text
+        
+        await agent_runner.close()
+        print(f"Agent Final Reply: {final_reply}")
+
+        # 5. RETURN THE RESPONSE
+        return ChatResponse(reply=final_reply, session_id=session.id)
+
+    except Exception as e:
+        print(f"An error occurred during chat processing: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="An internal error occurred in the chat service.")
+    
+@app.get("/chat/history/{user_id}", response_model=list[SessionSummary], tags=["Chat"])
+async def get_session_history_for_user(user_id: str):
+    """
+    Retrieves a list of all past conversation sessions for a given user.
+    """
+    if not session_service:
+        raise HTTPException(status_code=503, detail="Chat service not available.")
+    try:
+        sessions = await session_service.list_sessions(app_name="invoice_chat", user_id=user_id)
+        sessions=dict(sessions)
+        summaries = []
+        lastmessage = ""
+        for session in sessions["sessions"]:
+            session = await session_service.get_session(session_id=session.id, app_name="invoice_chat", user_id=user_id)
+            events=session.events
+
+            last_event=events[-1]
+            last_but_event=events[-2]
+            lastmessage=last_event.content.parts[0].text if last_event.content.role=="model" else last_but_event.content.parts[0].text
+                    
+            summaries.append(SessionSummary(
+                id=session.id,
+                last_message=lastmessage,
+                last_updated=session.last_update_time
+            ))
+        
+        # Sort by most recently modified
+        summaries.sort(key=lambda s: s.last_updated, reverse=True)
+        return summaries
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {e}")
+
+@app.get("/chat/history/session/{session_id}", response_model=SessionHistory, tags=["Chat"])
+async def get_messages_for_session(session_id: str, user_id: str):
+    """
+    Retrieves the full message history for a single conversation session.
+    """
+    if not session_service:
+        raise HTTPException(status_code=503, detail="Chat service not available.")
+    try:
+        # Step 1: First, get the session to confirm it exists and belongs to the user.
+        session = await session_service.get_session(session_id=session_id, app_name="invoice_chat", user_id=user_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        
+        session = await session_service.get_session(session_id=session_id, app_name="invoice_chat", user_id=user_id)
+        events=session.events
+
+        messages = []
+        # The history is in the `events` list, which contains Content objects
+        for event in events:
+            # print(event)
+            
+            if event.content.role=="user":
+                if event.content.parts[0].text is not None:
+                    messages.append(event.content.parts[0].text)
+            if event.is_final_response() :
+                if event.content.parts[0].text is not None:
+                    messages.append(event.content.parts[0].text)
+
+        return SessionHistory(id=session.id, messages=messages)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get session messages: {e}")
+
+@app.delete("/chat/history/session/{session_id}", status_code=204, tags=["Chat"])
+async def delete_chat_session(session_id: str, user_id: str): # user_id for security
+    """
+    Deletes a single conversation session.
+    """
+    if not session_service:
+        raise HTTPException(status_code=503, detail="Chat service not available.")
+    try:
+        await session_service.delete_session(session_id=session_id, app_name="invoice_chat", user_id=user_id)
+        return
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {e}")
