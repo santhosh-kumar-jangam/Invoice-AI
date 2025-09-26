@@ -72,6 +72,7 @@ function LoginPage({ onLogin }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required 
+              placeholder="e.g., alex@company.com"
             />
           </div>
           <div className="input-group">
@@ -82,6 +83,7 @@ function LoginPage({ onLogin }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required 
+              placeholder="Enter your password" 
             />
           </div>
           <button type="submit" className="btn btn-primary" disabled={isLoading}>
@@ -89,6 +91,9 @@ function LoginPage({ onLogin }) {
           </button>
         </form>
       </div>
+      <footer className="login-page-footer">
+        © {new Date().getFullYear()} Invoice AI. All Rights Reserved.
+      </footer>
     </div>
   );
 }

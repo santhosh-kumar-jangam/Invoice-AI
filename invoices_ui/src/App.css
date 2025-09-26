@@ -24,13 +24,23 @@ body { margin: 0; font-family: var(--font-main); color: var(--text-color); backg
 *, *:before, *:after { box-sizing: inherit; }
 
 /* --- Login Page --- */
-.login-page-container { display: flex; justify-content: center; align-items: center; height: 100vh; }
+.login-page-container { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: var(--sidebar-bg); background-image: radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.15) 0%, transparent 30%),radial-gradient(circle at 80% 90%, rgba(59, 130, 246, 0.1) 0%, transparent 40%);background-size: cover; }
+.login-page-footer {
+  position: absolute;
+  bottom: 20px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.8rem;
+}
 .login-card { background: var(--header-bg); padding: 40px; border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 400px; text-align: center; }
 .login-card h1 { margin-top: 0; font-size: 1.75rem; }
 .login-card p { color: var(--text-color-light); margin-bottom: 32px; }
 .login-form .input-group { text-align: left; margin-bottom: 20px; }
 .login-form label { display: block; margin-bottom: 8px; font-weight: 500; }
 .login-form input { width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 1rem; }
+.login-form input::placeholder {
+  color: #adb5bd; /* A light, unobtrusive grey color */
+  opacity: 1; /* Ensures Firefox displays the color correctly */
+}
 .login-form .btn { width: 100%; padding: 12px; font-size: 1rem; }
 
 /* --- Main App Layout --- */
