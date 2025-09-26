@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-// --- CHANGE 1: Import the 'History' icon ---
 import { MessageSquare, X, Paperclip, Send, Loader, Trash2, ArrowLeft, Plus, RefreshCw, History as HistoryIcon } from 'lucide-react';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 const initialMessage = { author: 'ai', text: 'Hello! How can I help you today?' };
 
 export default function ChatWidget({ user_id }) {
-  // --- CHANGE 2: Set the widget to be open and in 'chat' view by default ---
   const [isOpen, setIsOpen] = useState(false);
   const [activeView, setActiveView] = useState('chat');
   
@@ -17,7 +15,9 @@ export default function ChatWidget({ user_id }) {
   const [history, setHistory] = useState([initialMessage]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  
   const chatBodyRef = useRef(null);
+  const inputRef = useRef(null); // --- NEW --- Create a ref for the input field
 
   // --- API Functions ---
   const fetchSessions = async () => {
@@ -59,14 +59,30 @@ export default function ChatWidget({ user_id }) {
   };
   
   // --- Effects ---
-  // --- CHANGE 3: The useEffect for fetching on open is no longer needed. ---
-  // The fetch will now be triggered by the user clicking the history button.
-
   useEffect(() => {
     if (chatBodyRef.current) {
       chatBodyRef.current.scrollTop = chatBodyRef.current.scrollHeight;
     }
   }, [history, isSending]);
+
+  // --- NEW --- useEffect to focus when the widget opens or view changes to 'chat'
+  useEffect(() => {
+    if (isOpen && activeView === 'chat' && inputRef.current) {
+      // Use a timeout to ensure focus happens after any CSS transitions
+      setTimeout(() => {
+        inputRef.current.focus();
+      }, 100); 
+    }
+  }, [isOpen, activeView]);
+
+  // --- NEW --- useEffect to re-focus the input after a message is sent
+  useEffect(() => {
+    // Re-focus when sending is finished and we're in the chat view
+    if (!isSending && isOpen && activeView === 'chat' && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isSending, isOpen, activeView]);
+
 
   // --- Event Handlers ---
   const handleSend = async () => {
@@ -90,8 +106,6 @@ export default function ChatWidget({ user_id }) {
         const aiMessage = { author: 'ai', text: data.reply };
         setHistory(prev => [...prev, aiMessage]);
         
-        // If this was a new session, we don't need to auto-fetch the list anymore.
-        // The user can view it when they click the history button.
         if (wasNewSession) {
             // Optional: you could still pre-fetch here in the background if you want.
             // fetchSessions(); 
@@ -111,7 +125,6 @@ export default function ChatWidget({ user_id }) {
     setActiveView('chat'); // Ensure we are in the chat view for a new chat
   };
   
-  // --- CHANGE 4: Create a new handler to show the history list ---
   const handleViewHistory = () => {
     setActiveView('list');
     fetchSessions(); // Fetch sessions when the user wants to see them
@@ -144,10 +157,8 @@ export default function ChatWidget({ user_id }) {
       </button>
 
       <div className={`chat-window ${isOpen ? 'open' : ''}`}>
-        {/* --- CHANGE 5: Updated header logic for new UI flow --- */}
         <div className="chat-header">
           <div className="chat-header-title">
-            {/* Show back arrow ONLY when in list view to return to chat */}
             {activeView === 'list' && (
               <button className="chat-action-btn" onClick={() => setActiveView('chat')} title="Back to chat">
                 <ArrowLeft size={16}/>
@@ -156,7 +167,6 @@ export default function ChatWidget({ user_id }) {
             <h4>{activeView === 'list' ? 'Conversations' : 'AI Assistant'}</h4>
           </div>
           <div className="chat-header-controls">
-            {/* Show these controls ONLY when in chat view */}
             {activeView === 'chat' && (
               <>
                 <button className="chat-action-btn" onClick={handleClearUiChat} title="Clear current chat view">
@@ -207,7 +217,16 @@ export default function ChatWidget({ user_id }) {
             <div className="chat-input-wrapper">
               <label htmlFor="chat-file-upload" className="chat-action-btn" title="Attach file"><Paperclip size={20} /></label>
               <input type="file" id="chat-file-upload" style={{ display: 'none' }} />
-              <input type="text" placeholder="Type your message..." value={message} onChange={(e) => setMessage(e.target.value)} onKeyPress={handleKeyPress} disabled={isSending}/>
+              {/* --- NEW --- Attach the ref to the input element */}
+              <input 
+                ref={inputRef}
+                type="text" 
+                placeholder="Type your message..." 
+                value={message} 
+                onChange={(e) => setMessage(e.target.value)} 
+                onKeyPress={handleKeyPress} 
+                disabled={isSending}
+              />
               <button className="chat-action-btn send-btn" title="Send message" onClick={handleSend} disabled={!message.trim() || isSending}><Send size={20} /></button>
             </div>
           </div>

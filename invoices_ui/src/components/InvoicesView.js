@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { File, Code, X, Loader, FileText, ServerCrash, Trash2, Search, RefreshCw } from 'lucide-react';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
@@ -10,7 +11,7 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
   const [sortOrder, setSortOrder] = useState('newest');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
-
+  const [statusFilter, setStatusFilter] = useState('all');
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isJsonView, setIsJsonView] = useState(false);
@@ -32,6 +33,9 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
 
   useEffect(() => {
     let processedInvoices = [...allInvoices];
+    if (statusFilter !== 'all') {
+        processedInvoices = processedInvoices.filter(invoice => invoice.status === statusFilter);
+    }
     if (searchTerm) {
         processedInvoices = processedInvoices.filter(invoice => invoice.name.toLowerCase().includes(searchTerm.toLowerCase()));
     }
@@ -44,7 +48,7 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
         }
     });
     setInvoices(processedInvoices);
-  }, [allInvoices, searchTerm, sortOrder]);
+  }, [allInvoices, searchTerm, sortOrder, statusFilter]);
 
   useEffect(() => {
     if (!isModalOpen || !selectedInvoice) return;
@@ -138,7 +142,7 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
       }
 
       // Call the parent's full refresh function. This will make the faded item disappear.
-      onDataChange();
+      await onDataChange();
       
       if (selectedInvoice?.id === invoiceToDelete.id) {
           setIsModalOpen(false);
@@ -156,6 +160,7 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
 
   const handleSearchChange = (e) => { setSearchTerm(e.target.value); setCurrentPage(1); };
   const handleSortChange = (e) => { setSortOrder(e.target.value); setCurrentPage(1); };
+  const handleStatusFilterChange = (e) => { setStatusFilter(e.target.value); setCurrentPage(1); };
 
   const totalPages = Math.ceil(invoices.length / itemsPerPage);
   const paginatedInvoices = invoices.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -181,7 +186,14 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
         </div>
         <div className="list-controls">
             <div className="search-input-wrapper"><Search size={16} className="search-icon" /><input type="text" placeholder="Search by filename..." className="search-input" value={searchTerm} onChange={handleSearchChange} /></div>
-            <select className="sort-dropdown" value={sortOrder} onChange={handleSortChange}><option value="newest">Sort by: Newest</option><option value="oldest">Sort by: Oldest</option><option value="name-az">Sort by: Name (A-Z)</option><option value="name-za">Sort by: Name (Z-A)</option></select>
+            <select className="control-dropdown" value={statusFilter} onChange={handleStatusFilterChange}>
+                <option value="all">Filter by: All Statuses</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="PROCESSING">Processing</option>
+                <option value="FAILED">Failed</option>
+                <option value="UPLOADED">Uploaded</option>
+            </select>
+            <select className="control-dropdown" value={sortOrder} onChange={handleSortChange}><option value="newest">Sort by: Newest</option><option value="oldest">Sort by: Oldest</option><option value="name-az">Sort by: Name (A-Z)</option><option value="name-za">Sort by: Name (Z-A)</option></select>
         </div>
         <div className="invoice-list-scroll">
             {paginatedInvoices.map(invoice => {
@@ -242,7 +254,7 @@ export default function InvoicesView({ allInvoices, onDataChange, onRefresh, isR
                     <p>Are you sure you want to permanently delete <strong>{invoiceToDelete.name}</strong>? This action cannot be undone.</p>
                     <div className="delete-modal-actions">
                         <button className="btn btn-secondary" onClick={() => setIsDeleteModalOpen(false)} disabled={isDeleting}>Cancel</button>
-                        <button className="btn btn-danger" onClick={confirmDelete} disabled={isDeleting}>
+                        <button className="btn btn-danger" onClick={(e) => {e.stopPropagation(); confirmDelete();}}  disabled={isDeleting}>
                             {isDeleting ? (<><Loader size={16} className="loader" /><span>Deleting...</span></>) : ('Delete')}
                         </button>
                     </div>

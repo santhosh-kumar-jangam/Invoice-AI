@@ -116,3 +116,110 @@ def get_total_amount_for_vendor(vendor_name: str) -> dict:
 
     currency = currency_set.pop() if len(currency_set) == 1 else "MIXED"
     return {"vendor_name": vendor_name, "total_amount": total, "currency": currency, "invoice_count": invoice_count}
+
+def find_invoices_above_amount(amount: float) -> list[dict]:
+    """
+    Finds all invoices where the total_amount is greater than or equal to the specified amount.
+    """
+    if not db: 
+        return [{"error": "Database not connected"}]
+    
+    print(f"TOOL: Searching for invoices with total amount >= {amount}")
+    try:
+        invoices = []
+        # This query relies on the 'total_amount_num' field and requires an index.
+        docs = db.collection("invoices").where("total_amount_num", ">=", amount).stream()
+        
+        for doc in docs:
+            invoices.append(doc.to_dict())
+            
+        return invoices
+    except Exception as e:
+        print(f"Error querying by amount: {e}")
+        return [{"error": "Could not query the database. An index on 'total_amount_num' might be missing."}]
+    
+def get_top_vendors_by_spending(limit: int = 5) -> dict:
+    """
+    Calculates and returns the top vendors based on the sum of their total invoice amounts.
+    Only considers invoices with 'COMPLETED' status.
+    """
+    if not db: 
+        return {"error": "Database not connected"}
+    
+    print(f"TOOL: Calculating top {limit} vendors by spending.")
+    try:
+        vendor_totals = {}
+        
+        # This query requires an index on 'status'.
+        docs = db.collection("invoices").where("status", "==", "COMPLETED").stream()
+        
+        for doc in docs:
+            data = doc.to_dict()
+            vendor = data.get("vendor_name", "Unknown Vendor")
+            amount = data.get("total_amount_num", 0)
+            if vendor not in vendor_totals:
+                vendor_totals[vendor] = 0
+            vendor_totals[vendor] += amount
+            
+        # Sort vendors by total amount in descending order
+        sorted_vendors = sorted(vendor_totals.items(), key=lambda item: item[1], reverse=True)
+        
+        # Format the output
+        top_vendors = [{"vendor_name": v[0], "total_spent": v[1]} for v in sorted_vendors[:limit]]
+        
+        return {"top_vendors": top_vendors}
+
+    except Exception as e:
+        print(f"Error calculating top vendors: {e}")
+        return {"error": "Could not calculate top vendors."}
+    
+def find_overdue_invoices() -> list[dict]:
+    """
+    Finds all invoices with a status of 'COMPLETED' (approved for payment) 
+    whose due_date is in the past.
+    """
+    if not db: 
+        return [{"error": "Database not connected"}]
+        
+    print(f"TOOL: Searching for overdue invoices.")
+    try:
+        overdue_invoices = []
+        today = datetime.datetime.now(datetime.timezone.utc)
+        
+        # This query requires a composite index on ('status', 'due_date_dt')
+        docs = db.collection("invoices").where(
+            "status", "==", "COMPLETED"
+        ).where(
+            "due_date_dt", "<", today
+        ).stream()
+        
+        for doc in docs:
+            overdue_invoices.append(doc.to_dict())
+            
+        return overdue_invoices
+    except Exception as e:
+        print(f"Error finding overdue invoices: {e}")
+        return [{"error": "Could not find overdue invoices. A composite index may be required."}]
+    
+def search_invoices_by_filename(keyword: str) -> list[dict]:
+    """
+    Searches for invoices where the filename contains the given keyword.
+    The search is case-insensitive.
+    """
+    if not db: 
+        return [{"error": "Database not connected"}]
+        
+    print(f"TOOL: Searching for filenames containing '{keyword.lower()}'")
+    try:
+        all_invoices = db.collection("invoices").stream()
+        
+        matching_invoices = []
+        for invoice in all_invoices:
+            if keyword.lower() in invoice.id.lower():
+                matching_invoices.append(invoice.to_dict())
+                
+        return matching_invoices
+    except Exception as e:
+        print(f"Error searching invoices by filename: {e}")
+        return [{"error": "Could not perform the search."}]
+    
